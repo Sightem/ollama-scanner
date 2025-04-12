@@ -1,0 +1,157 @@
+name: Build and Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-msys2:
+    name: Build Windows Executable (MSYS2/MinGW)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-zlib
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Project
+        run: cmake --build build --config Release --parallel
+
+      - name: Prepare Artifact Details
+        id: prep
+        shell: bash
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG=${GITHUB_REF#refs/tags/}
+          else
+            TAG="dev-${GITHUB_SHA::7}"
+          fi
+          VERSION=${TAG#v}
+          ARTIFACT_NAME="ollama-scanner-${VERSION}-windows-amd64.exe"
+          ARCHIVE_NAME="ollama-scanner-${VERSION}-windows-amd64.zip"
+          echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Find and Rename Executable
+        run: |
+          exe_path=$(find build -name ollama-scanner.exe -print -quit)
+          if [[ -z "$exe_path" ]]; then
+            echo "::error::Could not find ollama-scanner.exe within the 'build' directory."
+            exit 1
+          else
+            mv "$exe_path" "${{ steps.prep.outputs.artifact_name }}"
+          fi
+
+      - name: Create ZIP Archive
+        uses: papeloto/action-zip@v1
+        with:
+          files: ${{ steps.prep.outputs.artifact_name }}
+          dest: ${{ steps.prep.outputs.archive_name }}
+
+      - name: Upload Release Asset (Windows)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag_name }}
+          files: |
+            ${{ steps.prep.outputs.archive_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux-ubuntu:
+    name: Build Linux Executable (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            zlib1g-dev \
+            libssl-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Project
+        run: cmake --build build --config Release --parallel
+
+      - name: Prepare Artifact Details
+        id: prep
+        shell: bash
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG=${GITHUB_REF#refs/tags/}
+          else
+            TAG="dev-${GITHUB_SHA::7}"
+          fi
+          VERSION=${TAG#v}
+          ARTIFACT_NAME="ollama-scanner-${VERSION}-linux-amd64"
+          ARCHIVE_NAME="ollama-scanner-${VERSION}-linux-amd64.tar.gz"
+          echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Find and Rename Executable
+        run: |
+          exe_path=$(find build -name ollama-scanner -type f -executable -print -quit)
+          if [[ -z "$exe_path" ]]; then
+            echo "::error::Could not find executable 'ollama-scanner' within the 'build' directory."
+            exit 1
+          else
+            mv "$exe_path" "${{ steps.prep.outputs.artifact_name }}"
+            chmod +x "${{ steps.prep.outputs.artifact_name }}"
+          fi
+
+      - name: Create TAR.GZ Archive
+        shell: bash
+        run: |
+          tar -czvf "${{ steps.prep.outputs.archive_name }}" "${{ steps.prep.outputs.artifact_name }}"
+
+      - name: Upload Release Asset (Linux)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag_name }}
+          files: |
+            ${{ steps.prep.outputs.archive_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
